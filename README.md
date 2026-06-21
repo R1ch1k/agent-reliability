@@ -26,7 +26,7 @@ Two matched conditions over the same task isolate reliability from capability:
 | **`near`** | restated in the prompt | per-step **capability** (`n*value` when handed the value) |
 | **`distance`** | only in the manual | **reliability** (retrieve the right value under context load) |
 
-> **The load-bearing move:** if `near` stays pinned at **1.00** while `distance` decays, the decay *cannot* be "long-context capability relabeled" — capability-with-the-value-provided does not decay. This is the construct-validity control the long-context retrieval literature (RULER, lost-in-the-middle, NIAH) lacks.
+> **The load-bearing move:** if `near` stays pinned at **1.00** while `distance` decays, the decay *cannot* be "long-context capability relabeled" — capability-with-the-value-provided does not decay. This is a **tighter** capability control than the long-context retrieval literature uses: a *matched, same-fill* baseline, rather than 100-LongBench's short-context subtraction or RULER/NIAH's lack of one.
 
 Failures are taxonomised by **severity**: `distractor` (confident mis-retrieval of a real-but-wrong value), `wrong` (fabrication of a value not in the manual), `abstain` (graceful decline). Silent confident errors are the dangerous mode; most benchmarks score all three identically.
 
@@ -63,9 +63,10 @@ The decomposition is the contribution: "model X is better" becomes a structured 
 
 ## Positioning vs. the long-context literature
 
-The variable here is context-fill / retrieval-under-load, so the nearest neighbours are **RULER, Lost-in-the-Middle (Liu et al. 2023), NIAH, NoLiMa** — not τ-bench/METR. Two questions and their answers:
+The variable here is context-fill / retrieval-under-load, so the nearest neighbours are the **long-context-retrieval** lit — **RULER, Lost-in-the-Middle (Liu et al. 2023), NIAH, NoLiMa, Chroma "Context Rot", 100-LongBench** — not τ-bench/METR. **Honest scope:** the phenomenon (effective context ≪ advertised) and even the capability-isolation *goal* are precedented; the contribution here is a **tighter control + a severity taxonomy + the coordinate-system frame**, not priority on the phenomenon. Three questions and their answers:
 
-- **"Isn't R90 just RULER's effective context length?"** Same *quantity*, measured with a **stronger control** — RULER reads it against a fixed short-context baseline; here it's read against a **per-fill matched capability control** (`near`), which rules out the baseline itself being inflated/deflated. Plus an agentic wrapper, a severity taxonomy, and an abstention axis the retrieval benchmarks don't score.
+- **"Isn't R90 just RULER's effective context length?"** Same *quantity* — but read against a **per-fill matched capability control** (`near`, at the same fill) rather than RULER's fixed short-context baseline, which rules out the baseline itself being inflated/deflated. Plus an agentic wrapper, a severity taxonomy, and an abstention axis the retrieval benchmarks don't score.
+- **"Isn't this 100-LongBench or Chroma's Context Rot?"** Both are close, and both are conceded. 100-LongBench's LongScore *also* separates long-context from base ability — but via a **short-context subtraction**; `near` holds capability at the **same fill**. Chroma shows controlled length-degradation with distractors/position — but keeps the task trivial as an *implicit* control and scores correct/incorrect; we add an **explicit matched control + a failure-severity/abstention taxonomy**.
 - **"Why single-needle, not multi-needle?"** Our `distance` task is **NIAH-plus** — confusable same-format distractors + use-in-code — and the proof it isn't "aced" is the result (it spreads the panel 54× and pushes gpt-4o-mini below 0.50). Single-needle is the minimal clean substrate that keeps the capability control airtight; multi-needle / multi-hop is the named next step.
 
 ## Run it
