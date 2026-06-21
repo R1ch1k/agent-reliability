@@ -1,0 +1,31 @@
+# Secrets — never commit. Keep .env.example (template) committed instead.
+.env
+.env.*
+!.env.example
+
+# Internal working notes — kept LOCAL (cost figures, decisions log, agent config,
+# references to other projects). The public methodology lives in README.md; the
+# polished write-up is published separately once finalized.
+Brief.md
+CLAUDE.md
+Design - step library and feasibility probe.md
+Literature review.md
+Write-up - measuring agent reliability.md
+
+# Old-phase run outputs (v1/v2 calibration — superseded by the distance-probe data).
+results_*.jsonl
+calib_*.jsonl
+
+# Logs & caches
+*.log
+__pycache__/
+*.py[cod]
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+.venv/
+venv/
+
+# NOTE: dist_results_*.jsonl and posweep_*.jsonl ARE committed on purpose — they are
+# the headline data, so analyze_curves.py / make_figures.py reproduce every figure
+# from a clean clone with no API spend.

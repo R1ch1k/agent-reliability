@@ -1,0 +1,9 @@
+# Core harness providers. The offline `--mock` provider needs neither.
+anthropic>=0.40
+openai>=1.56
+
+# Figures (make_figures.py). analyze_curves.py is pure stdlib — no deps.
+matplotlib>=3.7
+
+# vLLM (for the open-weights rung) is installed in the Colab notebook, not here —
+# it pulls heavy CUDA wheels and is environment-specific. See notebooks/colab_open_model.ipynb.
