@@ -46,7 +46,10 @@ slice (Brief safety scope, 18 Jun).
 SCAFFOLD: native tool-calling loop, tools = append_function / done / abstain.
 run_tests is DELIBERATELY REMOVED — visible-test feedback would let the agent
 guess-and-check against distractors until it passed, the self-correction crutch §17
-says to remove. One shot to retrieve and write.
+says to remove. So there is NO CORRECTNESS FEEDBACK — but this is not literally
+"one shot": the agent gets up to --max-steps tool calls per needle, and a failed
+append_function echoes back the parse/import error (not whether the value is right),
+so it can fix non-importable code. The honest claim is "no correctness feedback".
 
 COST: the length lives in a STATIC, cached prefix (the manual), read ~0.1x after the
 first call on Anthropic / via automatic prefix caching on OpenAI; the agentic
@@ -73,6 +76,7 @@ Outputs: dist_results_<ts>.jsonl (per-run records) + a per-(fill,condition) summ
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import random
 import re
@@ -123,54 +127,88 @@ def _rule_line(rid: str, value: int) -> str:
     return f"Rule R-{rid}: the adjustment factor for ledger class {rid} is {value}."
 
 
+_INERT_DISTRACTORS = 60  # fixed rule pool for padding="inert" (length grows via inert filler)
+
+
 def make_haystack(
-    target_tokens: int, n_needles: int, depth_frac: float, seed: int
+    target_tokens: int,
+    n_needles: int,
+    depth_frac: float,
+    seed: int,
+    padding: str = "distractor",
+    needle_seed: int | None = None,
 ) -> tuple[str, list[Needle], set[int]]:
     """Build the manual. Returns (manual_text, needles, manual_values).
 
-    `manual_values` is every value that appears in the manual (needles + distractors);
-    a wrong answer equal to one of these = the agent retrieved the WRONG rule
+    `manual_values` is every VALUE-bearing rule value in the manual (needles + distractor
+    rules); a wrong answer equal to one of these = the agent retrieved the WRONG rule
     (confident error) rather than fabricating a number.
+
+    IV CONFOUND (review finding #4): with padding="distractor" (default, original) the manual
+    grows by adding MORE same-format rules, so context-length is confounded with search-space
+    size (more candidates) and — because the seed varies per fill — with target identity. The
+    committed 4-model ladder used this mode, so its IV is "retrieval under GROWING distractor-
+    dense load", not context-length alone. padding="inert" keeps a FIXED rule pool and grows
+    length with non-rule filler; needle_seed (if set) fixes the needles across fills. Together
+    they isolate raw length — the disentangling re-run (needs API spend; not yet run).
     """
     rng = random.Random(seed)
+    nrng = random.Random(needle_seed) if needle_seed is not None else rng
     used_ids: set[str] = set()
+    used_values: set[int] = set()
 
-    def new_id() -> str:
+    def new_id(r: random.Random) -> str:
         while True:
-            rid = "".join(rng.choice(_ID_ALPHABET) for _ in range(4))
+            rid = "".join(r.choice(_ID_ALPHABET) for _ in range(4))
             if rid not in used_ids:
                 used_ids.add(rid)
                 return rid
 
-    used_values: set[int] = set()
-
-    def new_value() -> int:
+    def new_value(r: random.Random) -> int:
         while True:
-            v = rng.randint(10000, 99999)
+            v = r.randint(10000, 99999)
             if v not in used_values:
                 used_values.add(v)
                 return v
 
-    needles = [Needle(new_id(), new_value()) for _ in range(n_needles)]
+    # Needles first (from nrng — fill-independent when needle_seed is set), so distractors
+    # drawn from rng avoid their ids/values via the shared used_* sets.
+    needles = [Needle(new_id(nrng), new_value(nrng)) for _ in range(n_needles)]
 
-    # Distractor rules to fill to ~target_tokens. The manual's structured rule text
-    # (ids + 5-digit numbers) tokenises at ~3.4 chars/token (measured on gpt-3.5/4o
-    # tokenisers, 20 Jun); the write-up x-axis uses the MEASURED per-call `ctx_tokens`,
-    # this is only a sizing knob. Keep it slightly conservative so fills stay under window.
+    # Sizing: the structured rule text tokenises at ~3.4 chars/token (measured on gpt-3.5/4o,
+    # 20 Jun); the write-up x-axis uses the MEASURED per-call `ctx_tokens`, this is a sizing knob.
     target_chars = int(target_tokens * _CHARS_PER_TOKEN)
-    distractor_lines: list[str] = []
-    chars = 0
-    while chars < target_chars:
-        line = _rule_line(new_id(), new_value())
-        distractor_lines.append(line)
-        chars += len(line) + 8  # + line-number prefix below
-        if len(distractor_lines) > 200000:  # runaway guard
-            break
+    if padding == "inert":
+        # Fixed-size rule pool; length grows via inert (non-rule) filler so context-length is
+        # NOT confounded with search-space size (review #4 — the disentangling configuration).
+        distractor_lines = [
+            _rule_line(new_id(rng), new_value(rng)) for _ in range(_INERT_DISTRACTORS)
+        ]
+        all_lines = list(distractor_lines)
+        chars = sum(len(x) + 8 for x in all_lines)
+        n = 0
+        while chars < target_chars:
+            line = (f"Appendix note {n:06d}: archival commentary; contains no "
+                    "adjustment-factor data.")
+            all_lines.append(line)
+            chars += len(line) + 8
+            n += 1
+            if n > 400000:  # runaway guard
+                break
+        rng.shuffle(all_lines)
+    else:  # "distractor" (default) — the manual grows by adding rules (CONFOUNDED IV)
+        all_lines = []
+        chars = 0
+        while chars < target_chars:
+            all_lines.append(_rule_line(new_id(rng), new_value(rng)))
+            chars += len(all_lines[-1]) + 8  # + line-number prefix below
+            if len(all_lines) > 200000:  # runaway guard
+                break
 
     # Insert the needles clustered around depth_frac (default 0.5 = middle, the
-    # hardest retrieval zone — maximises probe sensitivity; position-sweep deferred).
-    pos = max(0, min(len(distractor_lines), int(depth_frac * len(distractor_lines))))
-    rules = list(distractor_lines)
+    # hardest retrieval zone — maximises probe sensitivity).
+    pos = max(0, min(len(all_lines), int(depth_frac * len(all_lines))))
+    rules = list(all_lines)
     for k, nd in enumerate(needles):
         rules.insert(min(len(rules), pos + k * 7), _rule_line(nd.rid, nd.value))
 
@@ -181,7 +219,7 @@ def make_haystack(
         + body
         + "\n\n[END OF MANUAL]"
     )
-    manual_values = set(used_values)  # all needle + distractor values are unique draws
+    manual_values = set(used_values)  # all needle + distractor-rule values are unique draws
     return text, needles, manual_values
 
 
@@ -194,9 +232,10 @@ def needle_op(nd: Needle) -> V2Op:
         f"and use its literal integer value — do not guess, and do not reference any "
         f"manual entry by name (the manual is text, not importable code)."
     )
-    held_out = (
-        f"return m.{nd.fn_name}(2)=={2 * nd.value} and m.{nd.fn_name}(5)=={5 * nd.value}"
-    )
+    # grade on several inputs (not just 2,5) so a function that only coincidentally matches
+    # at two points — e.g. n*K+c — is caught as wrong (review minor: widen grading).
+    checks = " and ".join(f"m.{nd.fn_name}({i})=={i * nd.value}" for i in (1, 2, 3, 7, 11))
+    held_out = "return " + checks
     return V2Op(nd.fn_name, spec, [], [], "", "", held_out)
 
 
@@ -465,13 +504,14 @@ class LLMDist:
 
 
 # --------------------------------------------------------------------------- #
-# One needle: the agent retrieves + writes one function. No run_tests (one shot).
+# One needle: the agent retrieves + writes one function. No run_tests = no correctness
+# feedback (but up to max_steps tool calls; append errors are echoed for non-importable code).
 # --------------------------------------------------------------------------- #
 @dataclass
 class NeedleResult:
     rid: str
     value: int
-    outcome: str  # correct | distractor | wrong | abstained | maxsteps | corrupted
+    outcome: str  # correct|distractor|fabricated|unclassified_wrong|abstained|maxsteps|corrupted
     used_constant: float | None
     terminal: str
 
@@ -482,6 +522,7 @@ class RunRec:
     condition: str  # distance | near
     depth: float  # needle depth fraction (0.5 = middle = canonical curve; other = position sweep)
     model: str
+    provider: str  # anthropic | openai | mock — lets the analyzer exclude mock contamination
     seed: int
     tok_in: int
     tok_out: int
@@ -507,8 +548,12 @@ def run_one(
     depth_frac: float,
     max_steps: int,
     seed: int,
+    padding: str = "distractor",
+    needle_seed: int | None = None,
 ) -> RunRec:
-    manual, needles, manual_values = make_haystack(fill_target, n_needles, depth_frac, seed)
+    manual, needles, manual_values = make_haystack(
+        fill_target, n_needles, depth_frac, seed, padding, needle_seed
+    )
     system_text = SYSTEM_DIST + manual
     mock_ctx: dict[str, Any] | None = None
     if llm.provider == "mock":
@@ -580,6 +625,7 @@ def run_one(
             condition,
             depth_frac,
             llm.model,
+            llm.provider,
             seed,
             tin,
             tout,
@@ -592,9 +638,35 @@ def run_one(
         )
 
 
+def _fn_int_literals(modpath: Path, fn_name: str) -> set[int]:
+    """Integer-valued numeric literals inside `fn_name` (AST scan), to corroborate the
+    fn(1) constant-recovery — so severity isn't decided by a single call (review #8)."""
+    try:
+        tree = ast.parse(modpath.read_text())
+    except (SyntaxError, OSError, ValueError):
+        return set()
+    lits: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == fn_name:
+            for sub in ast.walk(node):
+                if not isinstance(sub, ast.Constant) or isinstance(sub.value, bool):
+                    continue
+                if isinstance(sub.value, int):
+                    lits.add(int(sub.value))
+                elif isinstance(sub.value, float) and float(sub.value).is_integer():
+                    lits.add(int(sub.value))
+    return lits
+
+
 def _classify(
     modpath: Path, nd: Needle, op: V2Op, terminal: str, manual_values: set[int]
 ) -> NeedleResult:
+    """Outcome taxonomy. 'wrong' is split into `distractor` (used a real-but-wrong manual
+    value = confident mis-retrieval), `fabricated` (used a clean number absent from the
+    manual = invention), and `unclassified_wrong` (broke the task some other way). Both the
+    recovered fn(1) constant AND an AST literal scan are used so the label isn't a single-
+    call grab-bag (review finding #8). NOTE: data collected before this change use the old
+    flat `wrong` label and are NOT re-graded (the modules are gone) — see Brief Findings."""
     if terminal == "abstain":
         return NeedleResult(nd.rid, nd.value, "abstained", None, terminal)
     if module_import_error(modpath) != "":
@@ -602,11 +674,24 @@ def _classify(
     if grade_step(modpath, op):
         return NeedleResult(nd.rid, nd.value, "correct", float(nd.value), terminal)
     k = recover_constant(modpath, nd.fn_name)
-    if k is not None and float(k).is_integer() and int(k) in manual_values and int(k) != nd.value:
+    lits = _fn_int_literals(modpath, nd.fn_name)
+    k_int = int(k) if (k is not None and float(k).is_integer()) else None
+    # distractor = a real-but-wrong MANUAL value (recovered constant OR a literal in the fn)
+    if k_int is not None and k_int in manual_values and k_int != nd.value:
         return NeedleResult(nd.rid, nd.value, "distractor", k, terminal)
+    distractor_lits = sorted(v for v in lits if v in manual_values and v != nd.value)
+    if distractor_lits:
+        return NeedleResult(nd.rid, nd.value, "distractor", float(distractor_lits[0]), terminal)
+    # fabricated = a clean integer NOT anywhere in the manual (invented, not mis-retrieved)
+    if k_int is not None and k_int not in manual_values:
+        return NeedleResult(nd.rid, nd.value, "fabricated", k, terminal)
+    fab_lits = sorted(v for v in lits if v not in manual_values and v != nd.value)
+    if fab_lits:
+        return NeedleResult(nd.rid, nd.value, "fabricated", float(fab_lits[0]), terminal)
     if terminal == "maxsteps":
         return NeedleResult(nd.rid, nd.value, "maxsteps", k, terminal)
-    return NeedleResult(nd.rid, nd.value, "wrong", k, terminal)
+    # imports + runs but neither a recognizable manual value nor a clean invented one
+    return NeedleResult(nd.rid, nd.value, "unclassified_wrong", k, terminal)
 
 
 # --------------------------------------------------------------------------- #
@@ -620,10 +705,13 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="dependency-distance reliability probe (Design §17)")
     ap.add_argument("--provider", default="anthropic", choices=["anthropic", "openai", "mock"])
     ap.add_argument("--model", default="gpt-4o-mini")
-    ap.add_argument("--fills", default="2000,8000,16000,32000,64000,96000,120000",
-                    help="target context-fill points in tokens (cap below the model's window)")
-    ap.add_argument("--conditions", default="distance,near",
-                    help="distance = needle buried in manual; near = rule restated in prompt")
+    ap.add_argument("--fills", nargs="+",
+                    default=["2000", "8000", "16000", "32000", "64000", "96000", "120000"],
+                    help="context-fill points in tokens, space- OR comma-separated "
+                         "(cap below the model's window)")
+    ap.add_argument("--conditions", nargs="+", default=["distance", "near"],
+                    help="space- OR comma-separated: distance = needle buried in manual; "
+                         "near = rule restated in prompt")
     ap.add_argument("--runs", type=int, default=20, help="runs per (fill, condition)")
     ap.add_argument("--needles", type=int, default=3, help="retrieval tasks per run")
     ap.add_argument("--depth", type=float, default=0.5, help="needle depth fraction (0.5 = middle)")
@@ -635,13 +723,23 @@ def main() -> None:
                     help="near-condition gate runs at the smallest fill (0 = skip)")
     ap.add_argument("--mock", action="store_true", help="offline deterministic model")
     ap.add_argument("--mock-mode", default="correct", choices=["correct", "distractor", "wrong", "refuse"])
+    ap.add_argument("--padding", default="distractor", choices=["distractor", "inert"],
+                    help="distractor (default, original; context length CONFOUNDED with "
+                         "search-space size) | inert (fixed rule pool + filler — isolates length)")
+    ap.add_argument("--fixed-needle-seed", type=int, default=None,
+                    help="draw needles from this fill-independent seed so the SAME needles appear "
+                         "at every fill (pair with --padding inert for the disentangling re-run)")
     args = ap.parse_args()
 
     provider = "mock" if args.mock else args.provider
-    fills = [int(x) for x in args.fills.split(",")]
-    conditions = [c.strip() for c in args.conditions.split(",") if c.strip()]
+    # accept "--fills 8000 32000" (nargs), "--fills 8000,32000" (comma), and mixes of both
+    fills = [int(x) for tok in args.fills for x in str(tok).split(",") if x.strip()]
+    conditions = [c.strip() for tok in args.conditions for c in str(tok).split(",") if c.strip()]
     stamp = time.strftime("%Y%m%d_%H%M%S")
-    out_path = Path(f"dist_results_{stamp}.jsonl")
+    # mock output MUST NOT land in dist_results_*.jsonl — analyze_curves globs that and mock
+    # records (ctx_tokens=0) would contaminate the real curves. Keep mock output separate.
+    out_prefix = "mock_results" if provider == "mock" else "dist_results"
+    out_path = Path(f"{out_prefix}_{stamp}.jsonl")
 
     print(f"Model: {args.model} ({provider}) | fills(tok): {fills} | "
           f"conditions: {conditions} | needles/run: {args.needles} | depth: {args.depth}")
@@ -658,7 +756,8 @@ def main() -> None:
               f"(must be at-ceiling; else the per-step task is too hard = capability) ==")
         with ThreadPoolExecutor(max_workers=args.workers) as ex:
             futs = [ex.submit(run_one, llm, gate_fill, "near", args.needles, args.depth,
-                              args.max_steps, 900000 + i) for i in range(args.calib)]
+                              args.max_steps, 900000 + i, args.padding, args.fixed_needle_seed)
+                    for i in range(args.calib)]
             recs = []
             for fu in futs:
                 try:
@@ -681,7 +780,8 @@ def main() -> None:
                 with ThreadPoolExecutor(max_workers=args.workers) as ex:
                     futs = [
                         ex.submit(run_one, llm_chain, fill, cond, args.needles, args.depth,
-                                  args.max_steps, fill * 1000 + i)
+                                  args.max_steps, fill * 1000 + i, args.padding,
+                                  args.fixed_needle_seed)
                         for i in range(args.runs)
                     ]
                     recs = []
@@ -703,7 +803,10 @@ def main() -> None:
                 outcomes = [n["outcome"] for r in recs for n in r.needles]
                 dist = outcomes.count("distractor") / tot if tot else 0.0
                 abst = outcomes.count("abstained") / tot if tot else 0.0
-                wrong = outcomes.count("wrong") / tot if tot else 0.0
+                # post-#8 the classifier splits the old flat "wrong" into fabricated /
+                # unclassified_wrong; fold both (+ any legacy "wrong") so the cell still sums to 1.
+                wrong = (outcomes.count("wrong") + outcomes.count("fabricated")
+                         + outcomes.count("unclassified_wrong")) / tot if tot else 0.0
                 mean_in = sum(r.tok_in for r in recs) / len(recs) if recs else 0.0
                 mean_cr = sum(r.cache_read for r in recs) / len(recs) if recs else 0.0
                 mean_ctx = sum(r.ctx_tokens for r in recs) / len(recs) if recs else 0.0

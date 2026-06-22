@@ -38,16 +38,40 @@ GPT35_FALLBACK: dict[str, list[tuple[float, float, int]]] = {
 }
 
 
+def wilson(p: float, n: int, z: float = 1.96) -> tuple[float, float]:
+    """Wilson 95% interval. NOTE: n here is needle-count, so this is OPTIMISTIC (needles within
+    a run are correlated — review #6); the run-clustered interval is in bootstrap_ci.py."""
+    if n <= 0:
+        return (0.0, 1.0)
+    d = 1 + z * z / n
+    c = (p + z * z / (2 * n)) / d
+    h = z * ((p * (1 - p) / n + z * z / (4 * n * n)) ** 0.5) / d
+    return (max(0.0, c - h), min(1.0, c + h))
+
+
+def canonical_files() -> list[str]:
+    """The canonical run files. Prefer an explicit manifest over a bare glob so a stray mock or
+    scratch file can never be ingested into the real curves (review finding #1)."""
+    manifest = Path("canonical_manifest.txt")
+    if manifest.exists():
+        names = [ln.strip() for ln in manifest.read_text(encoding="utf-8").splitlines()
+                 if ln.strip() and not ln.strip().startswith("#")]
+        return [f for f in names if Path(f).exists()]
+    return sorted(glob.glob("dist_results_*.jsonl"))
+
+
 def load() -> dict[str, dict[str, list[tuple[float, float, int]]]]:
     """model -> condition -> sorted list of (ctx, success_rate, n_needles)."""
     raw: dict[tuple[str, str, int], collections.Counter[str]] = collections.defaultdict(
         collections.Counter)
     ctxs: dict[tuple[str, str, int], list[float]] = collections.defaultdict(list)
-    for f in glob.glob("dist_results_*.jsonl"):
+    for f in canonical_files():
         for line in Path(f).read_text(encoding="utf-8").splitlines():
             if not line.strip():
                 continue
             r = json.loads(line)
+            if r.get("provider") == "mock":
+                continue  # never ingest mock records (defense beyond the filename split)
             if abs(float(r.get("depth", 0.5)) - 0.5) > 1e-9:
                 continue  # position-sweep arms (depth != 0.5) excluded from canonical curves
             key = (r["model"], r["condition"], r["fill_target"])
@@ -114,8 +138,11 @@ def main() -> None:
 
     print("=" * 78)
     print("PER-MODEL DISTANCE CURVE FITS (success = 1/(1+(ctx/c50)^beta))")
+    print("R90 = raw FIRST downward crossing of 0.90 (linear-interp), NOT a fitted parameter;")
+    print("only c50/beta come from the logistic fit. R90 is noise-sensitive on non-monotonic")
+    print("curves (esp. Sonnet, which bounces back above 0.90 after its first dip).")
     print("=" * 78)
-    print(f"{'model':>26} {'R90(tok)':>9} {'c50(fit)':>9} {'beta':>6} "
+    print(f"{'model':>26} {'R90(1st×)':>9} {'c50(fit)':>9} {'beta':>6} "
           f"{'shape':>9} {'pts':>4}")
     fits: dict[str, tuple[float, float, float | None]] = {}
     for m in models:
@@ -131,6 +158,8 @@ def main() -> None:
 
     print("\n" + "=" * 78)
     print("LADDER — does the knee move with capability? (R90 = effective reliable length)")
+    print("R90 is a DESCRIPTIVE first-crossing contour: the cross-model ORDERING is robust, the")
+    print("precise value is noise-sensitive (esp. Sonnet). Read the ladder as ordinal, not exact.")
     print("=" * 78)
     r90s: list[tuple[str, float]] = [
         (m, r90v) for m in models if m in fits and (r90v := fits[m][2]) is not None
@@ -157,7 +186,7 @@ def main() -> None:
     print(" i.e. a single-parameter rescaling does NOT collapse them: two params needed.)")
 
     print("\n" + "=" * 78)
-    print("NEAR control (must stay ~1.00 = capability is not the cause of the distance drop)")
+    print("NEAR control — must stay AT/NEAR ceiling (it is NOT exactly 1.00; report min + CI)")
     print("=" * 78)
     for m in models:
         near = data[m].get("near", [])
@@ -165,8 +194,19 @@ def main() -> None:
             continue
         lo = min(near, key=lambda x: x[1])
         hi_ctx = max(near, key=lambda x: x[0])
-        print(f"  {m:>26}: near min={lo[1]:.2f}, at deepest ctx≈{hi_ctx[0]:,.0f} "
+        ci = wilson(lo[1], lo[2])
+        print(f"  {m:>26}: near MIN={lo[1]:.3f} (n={lo[2]} needles, 95% CI "
+              f"[{ci[0]:.2f},{ci[1]:.2f}]) at ctx≈{lo[0]:,.0f}; deepest ctx≈{hi_ctx[0]:,.0f} "
               f"near={hi_ctx[1]:.2f}")
+        # matched-control check: every distance fill should have a near cell at ~the same ctx
+        near_ctx = [c for c, _, _ in near]
+        unmatched = [c for c, _, _ in data[m].get("distance", [])
+                     if all(abs(c - nc) > 0.15 * max(c, 1.0) for nc in near_ctx)]
+        if unmatched:
+            print(f"      ⚠ {len(unmatched)} distance fill(s) lack a matched near cell (±15% ctx): "
+                  f"{[f'{x:,.0f}' for x in unmatched]}")
+    print("(CI is needle-level = OPTIMISTIC; needles within a run are correlated — see "
+          "bootstrap_ci.py for the run-clustered interval. Review findings #5/#6.)")
 
 
 if __name__ == "__main__":

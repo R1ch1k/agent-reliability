@@ -1,0 +1,13 @@
+# Canonical distance-probe run files (the 4-model ladder, needle depth = 0.5).
+# analyze_curves.py / make_figures.py read THIS list, not a bare dist_results_*.jsonl glob,
+# so a stray mock_results_* / scratch file can never contaminate the real curves (review #1).
+# Mock output goes to mock_results_*.jsonl and is excluded by both filename and the provider field.
+# Position-sweep data (posweep_*.jsonl, depth != 0.5) is intentionally NOT listed here.
+dist_results_20260620_125709.jsonl
+dist_results_20260620_132115.jsonl
+dist_results_20260620_153010.jsonl
+dist_results_20260620_153707.jsonl
+dist_results_20260620_154103.jsonl
+dist_results_20260620_182708.jsonl
+dist_results_20260620_214525.jsonl
+dist_results_20260620_220438.jsonl

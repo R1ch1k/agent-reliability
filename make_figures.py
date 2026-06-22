@@ -19,6 +19,8 @@ from pathlib import Path
 
 import matplotlib
 
+from analyze_curves import canonical_files, wilson
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 
@@ -48,11 +50,13 @@ def load_distance() -> dict[str, dict[str, list[tuple[float, float, int]]]]:
     raw: dict[tuple[str, str, int], collections.Counter[str]] = collections.defaultdict(
         collections.Counter)
     ctxs: dict[tuple[str, str, int], list[float]] = collections.defaultdict(list)
-    for f in glob.glob("dist_results_*.jsonl"):
+    for f in canonical_files():  # explicit manifest, not a glob — no mock contamination (#1)
         for line in Path(f).read_text(encoding="utf-8").splitlines():
             if not line.strip():
                 continue
             r = json.loads(line)
+            if r.get("provider") == "mock":
+                continue
             if abs(float(r.get("depth", 0.5)) - 0.5) > 1e-9:
                 continue
             key = (r["model"], r["condition"], r["fill_target"])
@@ -85,6 +89,8 @@ def load_positions() -> dict[tuple[str, int], dict[float, tuple[float, float, in
             if not line.strip():
                 continue
             r = json.loads(line)
+            if r.get("provider") == "mock":
+                continue
             if r["condition"] != "distance":
                 continue
             key = (r["model"], r["fill_target"], float(r["depth"]))
@@ -121,8 +127,12 @@ def fig_curves(data: dict[str, dict[str, list[tuple[float, float, int]]]]) -> No
         r90txt = f"R90≈{r90/1000:.0f}k" if r90 else "R90>max"
         xs = [p[0] for p in dist]
         ys = [p[1] for p in dist]
-        ax.plot(xs, ys, "-o", color=COLOR[m], lw=2.2, ms=6,
-                label=f"{DISPLAY[m]}  ({r90txt})  — distance")
+        cis = [wilson(p[1], p[2]) for p in dist]
+        yerr = [[y - lo for y, (lo, _h) in zip(ys, cis)],
+                [h - y for y, (_lo, h) in zip(ys, cis)]]
+        ax.errorbar(xs, ys, yerr=yerr, fmt="-o", color=COLOR[m], lw=2.2, ms=6,
+                    capsize=2.5, elinewidth=1.0,
+                    label=f"{DISPLAY[m]}  ({r90txt})  — distance")
         if near:
             nx = [p[0] for p in near]
             ny = [p[1] for p in near]
@@ -136,9 +146,9 @@ def fig_curves(data: dict[str, dict[str, list[tuple[float, float, int]]]]) -> No
     ax.set_ylim(0.0, 1.06)
     ax.set_xlabel("Context fill (measured input tokens, log scale)")
     ax.set_ylabel("Success rate")
-    ax.set_title("Reliability vs. context-fill: effective reliable length scales ~54×\n"
-                 "solid = distance (reliability)   ·   dashed = near (capability control, ≈1.00)",
-                 fontsize=12)
+    ax.set_title("Reliability vs. context-fill: effective reliable length spans ~54× "
+                 "(R90, ordinal)\nsolid = distance (±Wilson, needle-level)   ·   "
+                 "dashed = near control (≥0.97, not 1.00)", fontsize=11.5)
     ax.legend(loc="lower left", fontsize=9, framealpha=0.92)
     ax.grid(True, which="both", ls="-", alpha=0.13)
     fig.tight_layout()
@@ -162,12 +172,23 @@ def fig_position(pos: dict[tuple[str, int], dict[float, tuple[float, float, int]
     x0 = list(range(len(depths)))
     for i, (model, fill, lab, col) in enumerate(series):
         cell = pos[(model, fill)]
-        ys = [cell.get(d, (0, float("nan"), 0))[1] for d in depths]
+        cd = [cell.get(d, (0, float("nan"), 0)) for d in depths]
+        ys = [c[1] for c in cd]
+        elo, ehi = [], []
+        for c in cd:
+            if c[1] == c[1] and c[2]:  # not NaN, n>0
+                lo, hi = wilson(c[1], c[2])
+                elo.append(c[1] - lo)
+                ehi.append(hi - c[1])
+            else:
+                elo.append(0.0)
+                ehi.append(0.0)
         xs = [x + (i - (n - 1) / 2) * width for x in x0]
-        bars = ax.bar(xs, ys, width=width * 0.95, color=col, label=lab)
+        bars = ax.bar(xs, ys, width=width * 0.95, color=col, label=lab,
+                      yerr=[elo, ehi], capsize=2, error_kw={"elinewidth": 0.8})
         for rect, y in zip(bars, ys):
             if y == y:  # not NaN
-                ax.text(rect.get_x() + rect.get_width() / 2, y + 0.015,
+                ax.text(rect.get_x() + rect.get_width() / 2, y + 0.05,
                         f"{y:.2f}", ha="center", va="bottom", fontsize=8)
     ax.set_xticks(x0)
     ax.set_xticklabels(labels)
