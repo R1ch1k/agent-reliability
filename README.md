@@ -43,6 +43,8 @@ With `near` **at/near ceiling the whole way** (min 0.97; flat to **891k tokens o
 
 ![Reliability vs. context-fill for four models; near control stays at/near ceiling (>=0.97) while distance decays, with effective reliable length spanning ~54x](fig1_reliability_curves.png)
 
+*Error bars are **run-clustered** 95% bootstrap CIs (`bootstrap_ci.py`), not needle-level — so the plot is no more confident than the analysis. Hollow rings mark distance points with **no matched `near` cell** (3 low-fill Haiku points; a matched-near re-run is a TODO).*
+
 ## Reliability is a coordinate system, not a number
 
 The decomposition is the contribution: "model X is better" becomes a structured statement across axes that move independently.

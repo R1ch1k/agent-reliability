@@ -1,0 +1,9 @@
+# Canonical needle-position-sweep files (lost-in-the-middle; depth in {0.1, 0.5, 0.9}).
+# make_figures.py Fig 2 reads THIS list, not a bare posweep_*.jsonl glob, and skips
+# provider=="mock" records — same anti-contamination treatment as canonical_manifest.txt.
+posweep_haiku_d01_222338.jsonl
+posweep_haiku_d05_222532.jsonl
+posweep_haiku_d09_222738.jsonl
+posweep_gpt4omini_d01_234143.jsonl
+posweep_gpt4omini_d05_234617.jsonl
+posweep_gpt4omini_d09_235146.jsonl

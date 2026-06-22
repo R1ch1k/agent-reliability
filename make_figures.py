@@ -6,29 +6,27 @@ Fig 1: the 4-model DISTANCE curves (reliability) vs context-fill, with the NEAR
 Fig 2: lost-in-the-middle — distance success by needle position (start/middle/end)
        at matched fill, for the two models that were position-swept.
 
-Aggregation mirrors analyze_curves.py: success = correct / total needles per cell,
-canonical curves use depth == 0.5 only, gpt-3.5 (raw lost then restored; fallback
-kept for safety) approximated where ctx_tokens predates logging.
+Error bars are **run-clustered** bootstrap 95% CIs (same method as bootstrap_ci.py) —
+NOT needle-level Wilson — so the plots are no more confident than the analysis (review #6).
+Both loaders read an explicit manifest (canonical_manifest.txt / posweep_manifest.txt) and
+skip provider=="mock" records, so a stray offline run can't contaminate either figure (#1/#5).
+Distance points with no matched near cell (±15% ctx) are ringed (review #5).
 """
 from __future__ import annotations
 
 import collections
 import glob
 import json
+import sys
 from pathlib import Path
 
 import matplotlib
 
-from analyze_curves import canonical_files, wilson
+from bootstrap_ci import SEED as BOOT_SEED
+from bootstrap_ci import _rand, cluster_boot, load_runs
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
-
-GPT35_CTX_RATIO = 1.25
-GPT35_FALLBACK: dict[str, list[tuple[float, float, int]]] = {
-    "distance": [(1300, 0.98, 45), (2600, 0.96, 45), (5200, 0.93, 45), (10400, 0.71, 45)],
-    "near": [(1300, 1.00, 45), (2600, 0.98, 45), (5200, 0.98, 45), (10400, 1.00, 45)],
-}
 
 ORDER = ["gpt-3.5-turbo", "gpt-4o-mini", "claude-haiku-4-5-20251001", "claude-sonnet-4-6"]
 DISPLAY = {
@@ -43,79 +41,75 @@ COLOR = {
     "claude-haiku-4-5-20251001": "#1f77b4",
     "claude-sonnet-4-6": "#2ca02c",
 }
+# (ctx, point, lo, hi, n_runs, n_needles)
+Cell = tuple[float, float, float, float, int, int]
 
 
-def load_distance() -> dict[str, dict[str, list[tuple[float, float, int]]]]:
-    """model -> condition -> sorted [(mean_ctx, success, n)] from dist_results_*.jsonl."""
-    raw: dict[tuple[str, str, int], collections.Counter[str]] = collections.defaultdict(
-        collections.Counter)
-    ctxs: dict[tuple[str, str, int], list[float]] = collections.defaultdict(list)
-    for f in canonical_files():  # explicit manifest, not a glob — no mock contamination (#1)
-        for line in Path(f).read_text(encoding="utf-8").splitlines():
-            if not line.strip():
-                continue
-            r = json.loads(line)
-            if r.get("provider") == "mock":
-                continue
-            if abs(float(r.get("depth", 0.5)) - 0.5) > 1e-9:
-                continue
-            key = (r["model"], r["condition"], r["fill_target"])
-            c = r.get("ctx_tokens") or r["fill_target"] * GPT35_CTX_RATIO
-            ctxs[key].append(c)
-            for n in r["needles"]:
-                raw[key][n["outcome"]] += 1
-    out: dict[str, dict[str, list[tuple[float, float, int]]]] = collections.defaultdict(
+def posweep_files() -> list[str]:
+    """Manifest-or-glob for the position-sweep files (mirrors analyze_curves.canonical_files)."""
+    manifest = Path("posweep_manifest.txt")
+    if manifest.exists():
+        names = [ln.strip() for ln in manifest.read_text(encoding="utf-8").splitlines()
+                 if ln.strip() and not ln.strip().startswith("#")]
+        return [f for f in names if Path(f).exists()]
+    return sorted(glob.glob("posweep_*.jsonl"))
+
+
+def load_distance() -> dict[str, dict[str, list[Cell]]]:
+    """model -> condition -> sorted [(ctx, point, lo95, hi95, n_runs, n_needles)] with
+    RUN-CLUSTERED bootstrap CIs (resamples whole runs; needles within a run aren't independent)."""
+    cells = load_runs()  # (model, cond, fill) -> [{"outcomes":[...], "ctx":int}, ...]
+    rng = _rand(BOOT_SEED)
+    out: dict[str, dict[str, list[Cell]]] = collections.defaultdict(
         lambda: collections.defaultdict(list))
-    for (model, cond, _fill), cnt in raw.items():
-        tot = sum(cnt.values())
-        succ = cnt["correct"] / tot if tot else 0.0
-        k = (model, cond, _fill)
-        out[model][cond].append((sum(ctxs[k]) / len(ctxs[k]), succ, tot))
+    for key in sorted(cells):  # fixed order => deterministic bootstrap draws
+        model, cond, _fill = key
+        runs = cells[key]
+        pt, lo, hi, nr, nn = cluster_boot(runs, rng)
+        ctx = sum(r["ctx"] for r in runs) / len(runs) if runs else 0.0
+        out[model][cond].append((ctx, pt, lo, hi, nr, nn))
     for model in out:
         for cond in out[model]:
             out[model][cond].sort()
-    if "gpt-3.5-turbo" not in out:
-        out["gpt-3.5-turbo"] = dict(GPT35_FALLBACK)  # type: ignore[assignment]
     return out
 
 
-def load_positions() -> dict[tuple[str, int], dict[float, tuple[float, float, int]]]:
-    """(model, fill) -> depth -> (mean_ctx, success, n) from posweep_*.jsonl (distance)."""
-    raw: dict[tuple[str, int, float], collections.Counter[str]] = collections.defaultdict(
-        collections.Counter)
-    ctxs: dict[tuple[str, int, float], list[float]] = collections.defaultdict(list)
-    for f in glob.glob("posweep_*.jsonl"):
+def load_positions() -> dict[tuple[str, int], dict[float, Cell]]:
+    """(model, fill) -> depth -> run-clustered Cell, from the position sweeps (distance only)."""
+    runs: dict[tuple[str, int, float], list[dict]] = collections.defaultdict(list)
+    for f in posweep_files():
         for line in Path(f).read_text(encoding="utf-8").splitlines():
             if not line.strip():
                 continue
             r = json.loads(line)
-            if r.get("provider") == "mock":
-                continue
-            if r["condition"] != "distance":
+            if r.get("provider") == "mock" or r["condition"] != "distance":
                 continue
             key = (r["model"], r["fill_target"], float(r["depth"]))
-            ctxs[key].append(r.get("ctx_tokens") or r["fill_target"])
-            for n in r["needles"]:
-                raw[key][n["outcome"]] += 1
-    out: dict[tuple[str, int], dict[float, tuple[float, float, int]]] = collections.defaultdict(
-        dict)
-    for (model, fill, depth), cnt in raw.items():
-        tot = sum(cnt.values())
-        succ = cnt["correct"] / tot if tot else 0.0
-        k = (model, fill, depth)
-        out[(model, fill)][depth] = (sum(ctxs[k]) / len(ctxs[k]), succ, tot)
+            runs[key].append({"outcomes": [n["outcome"] for n in r["needles"]],
+                              "ctx": r.get("ctx_tokens") or r["fill_target"]})
+    rng = _rand(BOOT_SEED + 1)
+    out: dict[tuple[str, int], dict[float, Cell]] = collections.defaultdict(dict)
+    for key in sorted(runs):
+        model, fill, depth = key
+        pt, lo, hi, nr, nn = cluster_boot(runs[key], rng)
+        ctx = sum(r["ctx"] for r in runs[key]) / len(runs[key])
+        out[(model, fill)][depth] = (ctx, pt, lo, hi, nr, nn)
     return out
 
 
-def contour(points: list[tuple[float, float, int]], thr: float) -> float | None:
-    for (c0, s0, _), (c1, s1, _) in zip(points, points[1:]):
+def contour(points: list[tuple[float, float]], thr: float) -> float | None:
+    for (c0, s0), (c1, s1) in zip(points, points[1:]):
         if s0 >= thr > s1:
             frac = (s0 - thr) / (s0 - s1) if s0 != s1 else 0.0
             return c0 + frac * (c1 - c0)
     return None
 
 
-def fig_curves(data: dict[str, dict[str, list[tuple[float, float, int]]]]) -> None:
+def _matched(c: float, near_ctx: list[float]) -> bool:
+    return any(abs(c - nc) <= 0.15 * max(c, 1.0) for nc in near_ctx)
+
+
+def fig_curves(data: dict[str, dict[str, list[Cell]]]) -> None:
     fig, ax = plt.subplots(figsize=(10, 6.2))
     models = [m for m in ORDER if m in data]
     for m in models:
@@ -123,20 +117,26 @@ def fig_curves(data: dict[str, dict[str, list[tuple[float, float, int]]]]) -> No
         near = data[m].get("near", [])
         if not dist:
             continue
-        r90 = contour(dist, 0.90)
-        r90txt = f"R90≈{r90/1000:.0f}k" if r90 else "R90>max"
-        xs = [p[0] for p in dist]
-        ys = [p[1] for p in dist]
-        cis = [wilson(p[1], p[2]) for p in dist]
-        yerr = [[y - lo for y, (lo, _h) in zip(ys, cis)],
-                [h - y for y, (_lo, h) in zip(ys, cis)]]
+        r90 = contour([(c, pt) for c, pt, *_ in dist], 0.90)
+        r90txt = f"R90≈{r90 / 1000:.0f}k" if r90 else "R90>max"
+        xs = [c for c, *_ in dist]
+        ys = [pt for _c, pt, *_ in dist]
+        yerr = [[pt - lo for _c, pt, lo, _hi, _nr, _nn in dist],
+                [hi - pt for _c, pt, _lo, hi, _nr, _nn in dist]]
         ax.errorbar(xs, ys, yerr=yerr, fmt="-o", color=COLOR[m], lw=2.2, ms=6,
                     capsize=2.5, elinewidth=1.0,
                     label=f"{DISPLAY[m]}  ({r90txt})  — distance")
         if near:
-            nx = [p[0] for p in near]
-            ny = [p[1] for p in near]
-            ax.plot(nx, ny, "--", color=COLOR[m], lw=1.1, alpha=0.45)
+            ax.plot([c for c, *_ in near], [pt for _c, pt, *_ in near],
+                    "--", color=COLOR[m], lw=1.1, alpha=0.45)
+            near_ctx = [c for c, *_ in near]
+            unx = [c for c, *_ in dist if not _matched(c, near_ctx)]
+            uny = [pt for c, pt, *_ in dist if not _matched(c, near_ctx)]
+            if unx:
+                ax.scatter(unx, uny, facecolors="none", edgecolors=COLOR[m], s=150,
+                           linewidths=1.6, zorder=5)
+    ax.scatter([], [], facecolors="none", edgecolors="grey", s=150, linewidths=1.6,
+               label="○ distance point with NO matched near cell")
     ax.axhline(0.90, color="grey", ls=":", lw=1, alpha=0.7)
     ax.text(1100, 0.905, "R90 threshold (0.90)", color="grey", fontsize=8, va="bottom")
     ax.axhline(0.50, color="grey", ls=":", lw=1, alpha=0.5)
@@ -147,16 +147,16 @@ def fig_curves(data: dict[str, dict[str, list[tuple[float, float, int]]]]) -> No
     ax.set_xlabel("Context fill (measured input tokens, log scale)")
     ax.set_ylabel("Success rate")
     ax.set_title("Reliability vs. context-fill: effective reliable length spans ~54× "
-                 "(R90, ordinal)\nsolid = distance (±Wilson, needle-level)   ·   "
+                 "(R90, ordinal)\nsolid = distance (±run-clustered 95% CI)   ·   "
                  "dashed = near control (≥0.97, not 1.00)", fontsize=11.5)
-    ax.legend(loc="lower left", fontsize=9, framealpha=0.92)
+    ax.legend(loc="lower left", fontsize=8.5, framealpha=0.92)
     ax.grid(True, which="both", ls="-", alpha=0.13)
     fig.tight_layout()
     fig.savefig("fig1_reliability_curves.png", dpi=150)
     print("wrote fig1_reliability_curves.png")
 
 
-def fig_position(pos: dict[tuple[str, int], dict[float, tuple[float, float, int]]]) -> None:
+def fig_position(pos: dict[tuple[str, int], dict[float, Cell]]) -> None:
     series = [
         ("claude-haiku-4-5-20251001", 120000, "Haiku 4.5 @120k (77% win)", "#1f77b4"),
         ("claude-haiku-4-5-20251001", 150000, "Haiku 4.5 @150k (96% win)*", "#9ecae1"),
@@ -170,19 +170,13 @@ def fig_position(pos: dict[tuple[str, int], dict[float, tuple[float, float, int]
     width = 0.8 / n
     fig, ax = plt.subplots(figsize=(9, 5.6))
     x0 = list(range(len(depths)))
+    nan = float("nan")
     for i, (model, fill, lab, col) in enumerate(series):
         cell = pos[(model, fill)]
-        cd = [cell.get(d, (0, float("nan"), 0)) for d in depths]
-        ys = [c[1] for c in cd]
-        elo, ehi = [], []
-        for c in cd:
-            if c[1] == c[1] and c[2]:  # not NaN, n>0
-                lo, hi = wilson(c[1], c[2])
-                elo.append(c[1] - lo)
-                ehi.append(hi - c[1])
-            else:
-                elo.append(0.0)
-                ehi.append(0.0)
+        cd = [cell.get(d) for d in depths]
+        ys = [c[1] if c else nan for c in cd]
+        elo = [(c[1] - c[2]) if c else 0.0 for c in cd]
+        ehi = [(c[3] - c[1]) if c else 0.0 for c in cd]
         xs = [x + (i - (n - 1) / 2) * width for x in x0]
         bars = ax.bar(xs, ys, width=width * 0.95, color=col, label=lab,
                       yerr=[elo, ehi], capsize=2, error_kw={"elinewidth": 0.8})
@@ -192,12 +186,12 @@ def fig_position(pos: dict[tuple[str, int], dict[float, tuple[float, float, int]
                         f"{y:.2f}", ha="center", va="bottom", fontsize=8)
     ax.set_xticks(x0)
     ax.set_xticklabels(labels)
-    ax.set_ylim(0, 1.12)
+    ax.set_ylim(0, 1.18)
     ax.set_ylabel("Distance success rate")
     ax.set_xlabel("Needle position in context")
-    ax.set_title("Lost-in-the-middle: at matched fill, the MIDDLE degrades most\n"
-                 "(general across both providers; *Haiku @150k middle is window-edge "
-                 "contaminated)", fontsize=11)
+    ax.set_title("Lost-in-the-middle: at matched fill, the MIDDLE degrades most "
+                 "(±run-clustered 95% CI)\n(general across both providers; *Haiku @150k middle "
+                 "is window-edge contaminated)", fontsize=10.5)
     ax.legend(fontsize=8.5, loc="lower center", ncol=2)
     ax.grid(True, axis="y", alpha=0.15)
     fig.tight_layout()
@@ -206,17 +200,23 @@ def fig_position(pos: dict[tuple[str, int], dict[float, tuple[float, float, int]
 
 
 def main() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
+        except (AttributeError, ValueError):
+            pass
     data = load_distance()
-    print("DISTANCE curve cells (model: [(ctx, success, n)...]):")
+    print("DISTANCE cells (model: [(ctx, point, lo, hi, n_runs)...]) — run-clustered:")
     for m in ORDER:
         if m in data and data[m].get("distance"):
-            pts = [(round(c), round(s, 2), n) for c, s, n in data[m]["distance"]]
+            pts = [(round(c), round(pt, 2), round(lo, 2), round(hi, 2), nr)
+                   for c, pt, lo, hi, nr, _nn in data[m]["distance"]]
             print(f"  {DISPLAY.get(m, m)}: {pts}")
     fig_curves(data)
     pos = load_positions()
-    print("\nPOSITION cells (model, fill): depth -> success:")
+    print("\nPOSITION cells (model, fill): depth -> point [lo,hi]:")
     for (model, fill), cell in sorted(pos.items()):
-        row = {d: round(v[1], 2) for d, v in sorted(cell.items())}
+        row = {d: (round(v[1], 2), round(v[2], 2), round(v[3], 2)) for d, v in sorted(cell.items())}
         print(f"  {DISPLAY.get(model, model)} @{fill}: {row}")
     fig_position(pos)
 
