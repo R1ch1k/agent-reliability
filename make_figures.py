@@ -6,8 +6,12 @@ Fig 1: the 4-model DISTANCE curves (reliability) vs context-fill, with the NEAR
 Fig 2: lost-in-the-middle — distance success by needle position (start/middle/end)
        at matched fill, for the two models that were position-swept.
 
-Error bars are **run-clustered** bootstrap 95% CIs (same method as bootstrap_ci.py) —
-NOT needle-level Wilson — so the plots are no more confident than the analysis (review #6).
+Error bars are **run-clustered** bootstrap 95% CIs — NOT needle-level Wilson — so the plots are
+no more confident than the analysis (review #6). Same method, B, and seed-family as bootstrap_ci.py:
+B = bootstrap_ci.B (5000) resamples; seed = bootstrap_ci.SEED (20260622) for the distance panel,
+SEED+1 for the position panel. NOTE: these are statistically equivalent to bootstrap_ci.py but NOT
+byte-identical resample draws (the two scripts consume the RNG in a different order) — that is
+intentional; we document B/seed rather than thread a shared resample sequence.
 Both loaders read an explicit manifest (canonical_manifest.txt / posweep_manifest.txt) and
 skip provider=="mock" records, so a stray offline run can't contaminate either figure (#1/#5).
 Distance points with no matched near cell (±15% ctx) are ringed (review #5).
@@ -59,7 +63,7 @@ def load_distance() -> dict[str, dict[str, list[Cell]]]:
     """model -> condition -> sorted [(ctx, point, lo95, hi95, n_runs, n_needles)] with
     RUN-CLUSTERED bootstrap CIs (resamples whole runs; needles within a run aren't independent)."""
     cells = load_runs()  # (model, cond, fill) -> [{"outcomes":[...], "ctx":int}, ...]
-    rng = _rand(BOOT_SEED)
+    rng = _rand(BOOT_SEED)  # B=bootstrap_ci.B (5000), seed=BOOT_SEED; equivalent to bootstrap_ci, not identical draws
     out: dict[str, dict[str, list[Cell]]] = collections.defaultdict(
         lambda: collections.defaultdict(list))
     for key in sorted(cells):  # fixed order => deterministic bootstrap draws
@@ -87,7 +91,7 @@ def load_positions() -> dict[tuple[str, int], dict[float, Cell]]:
             key = (r["model"], r["fill_target"], float(r["depth"]))
             runs[key].append({"outcomes": [n["outcome"] for n in r["needles"]],
                               "ctx": r.get("ctx_tokens") or r["fill_target"]})
-    rng = _rand(BOOT_SEED + 1)
+    rng = _rand(BOOT_SEED + 1)  # position panel: seed=BOOT_SEED+1, same B (5000)
     out: dict[tuple[str, int], dict[float, Cell]] = collections.defaultdict(dict)
     for key in sorted(runs):
         model, fill, depth = key
