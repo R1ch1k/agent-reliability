@@ -78,6 +78,7 @@ from __future__ import annotations
 import argparse
 import ast
 import json
+import os
 import random
 import re
 import subprocess
@@ -321,6 +322,7 @@ class LLMDist:
         ]
         self.client: Any = None
         self._retry_exc: tuple[type[BaseException], ...] = ()
+        self.extra_body: dict[str, Any] = {}
         if provider == "anthropic":
             import anthropic
 
@@ -332,6 +334,14 @@ class LLMDist:
             self.client = openai.OpenAI(max_retries=6)
             self._retry_exc = (openai.APIStatusError, openai.APIConnectionError)
             self.otools = to_openai_tools(self.tools)
+            # Open-weights rung (vLLM, OpenAI-compatible): allow injecting provider-specific
+            # request fields via env, e.g. {"chat_template_kwargs": {"enable_thinking": false}}
+            # to run Qwen3.6 in NON-thinking mode — matching the non-reasoning API panel, and so
+            # the hardcoded max_tokens isn't consumed by a <think> block. Unset for real OpenAI
+            # runs -> no-op, so the committed gpt-3.5 / gpt-4o-mini path is byte-for-byte unchanged.
+            raw_extra_body = os.environ.get("PROBE_OPENAI_EXTRA_BODY", "").strip()
+            if raw_extra_body:
+                self.extra_body = json.loads(raw_extra_body)
         elif provider == "mock":
             pass
         else:
@@ -417,15 +427,18 @@ class LLMDist:
 
     def _openai_create(self, messages: list[dict[str, Any]]) -> Any:
         delay = 4.0
+        create_kwargs: dict[str, Any] = dict(
+            model=self.model,
+            temperature=self.temperature,
+            max_tokens=800,
+            tools=self.otools,
+            messages=messages,
+        )
+        if self.extra_body:
+            create_kwargs["extra_body"] = self.extra_body
         for attempt in range(5):
             try:
-                return self.client.chat.completions.create(
-                    model=self.model,
-                    temperature=self.temperature,
-                    max_tokens=800,
-                    tools=self.otools,
-                    messages=messages,
-                )
+                return self.client.chat.completions.create(**create_kwargs)
             except self._retry_exc as e:  # type: ignore[misc]
                 status = getattr(e, "status_code", None)
                 retriable = status is None or status == 429 or status >= 500
@@ -532,6 +545,8 @@ class RunRec:
     n_correct: int
     n_total: int
     needles: list[dict[str, Any]]
+    padding: str = "distractor"  # IV mode: distractor (grow rules) | inert (fixed pool + filler)
+    needle_seed: int | None = None  # fixed-needle seed (same needles across fills) if set, else None
 
 
 def _mk_user(provider: str, text: str) -> dict[str, Any]:
@@ -635,6 +650,8 @@ def run_one(
             n_correct,
             len(results),
             [asdict(r) for r in results],
+            padding,
+            needle_seed,
         )
 
 

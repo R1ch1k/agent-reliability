@@ -16,6 +16,9 @@ Write-up - measuring agent reliability.md
 results_*.jsonl
 calib_*.jsonl
 
+# Offline --mock output: scratch only, must NEVER contaminate the real curves.
+mock_results_*.jsonl
+
 # Logs & caches
 *.log
 __pycache__/
