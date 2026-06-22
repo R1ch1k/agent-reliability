@@ -19,6 +19,10 @@ calib_*.jsonl
 # Offline --mock output: scratch only, must NEVER contaminate the real curves.
 mock_results_*.jsonl
 
+# Staging for incoming Colab run data (partial/working open-weights runs) — kept local
+# until a complete run is promoted to the repo root + canonical_manifest.txt.
+colab_runs/
+
 # Logs & caches
 *.log
 __pycache__/
