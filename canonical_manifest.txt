@@ -11,3 +11,10 @@ dist_results_20260620_154103.jsonl
 dist_results_20260620_182708.jsonl
 dist_results_20260620_214525.jsonl
 dist_results_20260620_220438.jsonl
+
+# Open-weights white-box rung: Qwen3.6-27B (BF16, vLLM, native 262k window, NO YaRN, depth 0.5,
+# distractor padding), 22-23 Jun 2026. Low fills 8k-64k (210615) + high fills 96k/144k (083931);
+# both near & distance flat at 1.00 through ctx ~212k (no knee in window). Records label it
+# model='open-model', provider='openai' (= the OpenAI-compatible vLLM adapter, NOT OpenAI).
+dist_results_20260622_210615.jsonl
+dist_results_20260623_083931.jsonl

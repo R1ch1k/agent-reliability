@@ -133,7 +133,7 @@ def main() -> None:
         data["gpt-3.5-turbo"] = dict(GPT35_FALLBACK)  # type: ignore[assignment]
         print("NOTE: gpt-3.5-turbo from LOGGED SUMMARY (raw data lost; re-run to restore).\n")
     order = ["gpt-3.5-turbo", "gpt-4o-mini", "claude-haiku-4-5-20251001",
-             "claude-sonnet-4-6"]
+             "claude-sonnet-4-6", "open-model"]
     models = [m for m in order if m in data] + [m for m in data if m not in order]
 
     print("=" * 78)
@@ -152,9 +152,16 @@ def main() -> None:
         c50, beta, _ = fit_logistic(pts)
         r90 = contour(pts, 0.90)
         fits[m] = (c50, beta, r90)
+        if r90 is None:
+            # Never crosses 0.90 in-window -> the logistic fit is unconstrained on the downside
+            # (c50/beta just rail to the grid edges), so it is meaningless. Report the fit as n/a
+            # and bound R90 by the DEEPEST ctx actually tested (">Nk") — NOT ">max": a flat curve
+            # tested to 212k cannot be ranked against a model whose knee sits beyond that.
+            maxc = max(p[0] for p in pts)
+            print(f"{m:>26} {('>' + format(maxc, ',.0f')):>9} {'n/a':>9} {'n/a':>6} {'flat':>9} {len(pts):>4}")
+            continue
         shape = "sharp" if beta >= 3 else ("gradual" if beta >= 1.2 else "v.gradual")
-        r90disp = f"{r90:,.0f}" if r90 else ">max"
-        print(f"{m:>26} {r90disp:>9} {c50:>9,.0f} {beta:>6.2f} {shape:>9} {len(pts):>4}")
+        print(f"{m:>26} {r90:>9,.0f} {c50:>9,.0f} {beta:>6.2f} {shape:>9} {len(pts):>4}")
 
     print("\n" + "=" * 78)
     print("LADDER — does the knee move with capability? (R90 = effective reliable length)")

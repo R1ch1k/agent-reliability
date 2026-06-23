@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """make_figures.py — render the two write-up figures from the raw JSONL.
 
-Fig 1: the 4-model DISTANCE curves (reliability) vs context-fill, with the NEAR
-       control (capability) overlaid — the headline coordinate-system plot.
+Fig 1: the DISTANCE curves (reliability) vs context-fill across the 5-model ladder (incl. the
+       open-weights Qwen3.6-27B rung), with the NEAR control (capability) overlaid — headline plot.
 Fig 2: lost-in-the-middle — distance success by needle position (start/middle/end)
        at matched fill, for the two models that were position-swept.
 
@@ -32,18 +32,21 @@ from bootstrap_ci import _rand, cluster_boot, load_runs
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 
-ORDER = ["gpt-3.5-turbo", "gpt-4o-mini", "claude-haiku-4-5-20251001", "claude-sonnet-4-6"]
+ORDER = ["gpt-3.5-turbo", "gpt-4o-mini", "claude-haiku-4-5-20251001", "claude-sonnet-4-6",
+         "open-model"]
 DISPLAY = {
     "gpt-3.5-turbo": "gpt-3.5-turbo",
     "gpt-4o-mini": "gpt-4o-mini",
     "claude-haiku-4-5-20251001": "Claude Haiku 4.5",
     "claude-sonnet-4-6": "Claude Sonnet 4.6",
+    "open-model": "Qwen3.6-27B (open-weights)",
 }
 COLOR = {
     "gpt-3.5-turbo": "#d62728",
     "gpt-4o-mini": "#ff7f0e",
     "claude-haiku-4-5-20251001": "#1f77b4",
     "claude-sonnet-4-6": "#2ca02c",
+    "open-model": "#9467bd",
 }
 # (ctx, point, lo, hi, n_runs, n_needles)
 Cell = tuple[float, float, float, float, int, int]
@@ -122,7 +125,7 @@ def fig_curves(data: dict[str, dict[str, list[Cell]]]) -> None:
         if not dist:
             continue
         r90 = contour([(c, pt) for c, pt, *_ in dist], 0.90)
-        r90txt = f"R90≈{r90 / 1000:.0f}k" if r90 else "R90>max"
+        r90txt = f"R90≈{r90 / 1000:.0f}k" if r90 else f"R90>{max(c for c, *_ in dist) / 1000:.0f}k"
         xs = [c for c, *_ in dist]
         ys = [pt for _c, pt, *_ in dist]
         yerr = [[pt - lo for _c, pt, lo, _hi, _nr, _nn in dist],
