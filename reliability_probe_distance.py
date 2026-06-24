@@ -309,6 +309,7 @@ class LLMDist:
         abstain_enabled: bool,
         cache: bool = False,
         mock_mode: str = "correct",
+        timeout: float | None = None,
     ) -> None:
         self.provider = provider
         self.model = model
@@ -326,12 +327,14 @@ class LLMDist:
         if provider == "anthropic":
             import anthropic
 
-            self.client = anthropic.Anthropic(max_retries=6)
+            self.client = (anthropic.Anthropic(max_retries=6, timeout=timeout)
+                           if timeout else anthropic.Anthropic(max_retries=6))
             self._retry_exc = (anthropic.APIStatusError, anthropic.APIConnectionError)
         elif provider == "openai":
             import openai
 
-            self.client = openai.OpenAI(max_retries=6)
+            self.client = (openai.OpenAI(max_retries=6, timeout=timeout)
+                           if timeout else openai.OpenAI(max_retries=6))
             self._retry_exc = (openai.APIStatusError, openai.APIConnectionError)
             self.otools = to_openai_tools(self.tools)
             # Open-weights rung (vLLM, OpenAI-compatible): allow injecting provider-specific
@@ -746,6 +749,12 @@ def main() -> None:
     ap.add_argument("--fixed-needle-seed", type=int, default=None,
                     help="draw needles from this fill-independent seed so the SAME needles appear "
                          "at every fill (pair with --padding inert for the disentangling re-run)")
+    ap.add_argument("--verbose", action="store_true",
+                    help="print each completed run on its own timestamped line (live progress in "
+                         "Colab + hang diagnosis) instead of the carriage-return counter")
+    ap.add_argument("--timeout", type=float, default=None,
+                    help="per-request client timeout (s). Default = SDK default (~600s). Lower it "
+                         "(e.g. 300) so a hung long-context call fails fast + retries visibly")
     args = ap.parse_args()
 
     provider = "mock" if args.mock else args.provider
@@ -763,7 +772,7 @@ def main() -> None:
 
     def make_llm(abstain_enabled: bool) -> LLMDist:
         return LLMDist(provider, args.model, args.temperature, abstain_enabled,
-                       cache=args.cache, mock_mode=args.mock_mode)
+                       cache=args.cache, mock_mode=args.mock_mode, timeout=args.timeout)
 
     # --- capability gate: near condition at the smallest fill must be at-ceiling --- #
     if args.calib > 0:
@@ -802,16 +811,24 @@ def main() -> None:
                         for i in range(args.runs)
                     ]
                     recs = []
+                    t_cell = time.time()
                     for k, fut in enumerate(futs, 1):
                         try:
                             rec = fut.result()
                         except Exception as e:  # noqa: BLE001 — protect the batch/spend
-                            print(f"\n  [run skipped] {type(e).__name__}: {e}", file=sys.stderr)
+                            print(f"\n  [{time.strftime('%H:%M:%S')}] [run skipped] "
+                                  f"{type(e).__name__}: {e}", file=sys.stderr, flush=True)
                             continue
                         recs.append(rec)
                         f.write(json.dumps(asdict(rec)) + "\n")
                         f.flush()
-                        print(f"  fill={fill:>6} {cond:8s} {k:2d}/{args.runs}        ", end="\r")
+                        if args.verbose:
+                            print(f"  [{time.strftime('%H:%M:%S')}] fill={fill} {cond} "
+                                  f"run {k}/{args.runs}  ctx={rec.ctx_tokens} "
+                                  f"correct={rec.n_correct}/{rec.n_total}  "
+                                  f"(+{time.time() - t_cell:.0f}s)", flush=True)
+                        else:
+                            print(f"  fill={fill:>6} {cond:8s} {k:2d}/{args.runs}        ", end="\r")
                 if not recs:
                     print(f"  fill={fill:>6} {cond:8s} ALL RUNS FAILED — skipping cell")
                     continue
