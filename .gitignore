@@ -23,6 +23,10 @@ mock_results_*.jsonl
 # until a complete run is promoted to the repo root + canonical_manifest.txt.
 colab_runs/
 
+# Local agent/tooling config — not part of the public methodology repo.
+.codex/
+.agents/
+
 # Logs & caches
 *.log
 __pycache__/

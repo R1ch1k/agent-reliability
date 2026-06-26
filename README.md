@@ -6,6 +6,16 @@ This is a **methodology contribution, not a leaderboard.** Every figure below re
 
 ---
 
+## What this is, and why
+
+Modern LLMs advertise enormous context windows — 200K, even 1M tokens — but the advertised window is **not** the *usable* window: a model gets less reliable at finding and using a specific fact long before it "runs out" of context. This project builds a small, controlled instrument to measure **where that reliability breaks for a given model**, and — the load-bearing part — to measure it **separately from raw capability**, so a failure means *"couldn't reliably retrieve the value under load,"* not *"couldn't do the task at all."*
+
+**The goal** is a clean, honest *method* for measuring reliability-under-context-load — demonstrated across **five models from two providers** (four API models + one open-weights white-box rung), with every number reproducible and every limitation stated plainly. It's a research/portfolio piece aimed at AI-evaluation work; the emphasis is rigour and honesty over a flashy headline. The contribution is narrow and explicit: the matched capability control, a failure-severity taxonomy, and a "reliability is a coordinate system" framing — *not* discovery of the underlying phenomenon, which the long-context literature already established (see [Positioning](#positioning-vs-the-long-context-literature)).
+
+**Status:** complete and self-contained. Five-rung ladder (four API models + an open-weights white-box rung, all figures reproducible offline with no API key), two independent adversarial code-review passes addressed. Genuinely remaining items are flagged as [future work](#future-work): a length-disentangling sweep (`--padding inert`), pushing the open-weights rung past its measured ctx-212k lower bound, and a multi-needle / multi-hop variant — the current results stand on their own without them.
+
+---
+
 ## The question
 
 Agent benchmarks usually report one number — a success rate — that quietly fuses two different things:
@@ -32,7 +42,7 @@ Failures are taxonomised by **severity**: `distractor` (confident mis-retrieval 
 
 ## Headline result
 
-With `near` **at/near ceiling the whole way** (min 0.97; flat to **891k tokens on Sonnet**, 89% of a 1M window), the **effective reliable context length — R90, the fill where `distance` first crosses below 0.90 — spans ~54×** across a 4-model, 2-provider ladder. R90 is a **descriptive first-crossing contour** (linear-interpolated), not a fitted parameter: the cross-model **ordering** is robust, the precise value is noise-sensitive (especially Sonnet, which bounces back above 0.90 after its first dip).
+With `near` **at/near ceiling the whole way** (min 0.97; flat to **891k tokens on Sonnet**, 89% of a 1M window), the **effective reliable context length — R90, the fill where `distance` first crosses below 0.90 — spans ~54×** across the four API models. A fifth rung — the open-weights **Qwen3.6-27B** — joins the **top band** but stays flat through its tested range (R90 **> 212k**, a lower bound), so it can't be ranked against Sonnet; it's the white-box / reproducibility anchor, not a higher rung. R90 is a **descriptive first-crossing contour** (linear-interpolated), not a fitted parameter: the cross-model **ordering** is robust, the precise value is noise-sensitive (especially Sonnet, which bounces back above 0.90 after its first dip).
 
 | Model | Provider | Window | **R90 (first 0.90-crossing)** | `near` min |
 |---|---|---|---|---|
@@ -40,8 +50,9 @@ With `near` **at/near ceiling the whole way** (min 0.97; flat to **891k tokens o
 | gpt-4o-mini | OpenAI | 128k | **~30.7k** | 1.00 |
 | Claude Haiku 4.5 | Anthropic | 200k | **~125.7k** | 0.97 |
 | Claude Sonnet 4.6 | Anthropic | 1M | **~395k** | 1.00 (to 891k) |
+| Qwen3.6-27B (open-weights) | vLLM (local, BF16) | 262k | **>212k** (flat; lower bound) | 1.00 (to 212k) |
 
-![Reliability vs. context-fill for four models; near control stays at/near ceiling (>=0.97) while distance decays, with effective reliable length spanning ~54x](fig1_reliability_curves.png)
+![Reliability vs. context-fill for five models (four API + one open-weights); the near control stays at/near ceiling (>=0.97) while distance decays, with effective reliable length spanning ~54x across the API models](figures/fig1_reliability_curves.png)
 
 *Error bars are **run-clustered** 95% bootstrap CIs (`bootstrap_ci.py`), not needle-level — so the plot is no more confident than the analysis. Hollow rings mark distance points with **no matched `near` cell** (3 low-fill Haiku points; a matched-near re-run is a TODO).*
 
@@ -54,12 +65,12 @@ The decomposition is the contribution: "model X is better" becomes a structured 
 3. **Failure severity** — confidently-wrong → fabricates → abstains → always-answers, across the ladder. *Interesting, but confounded with depth.*
 4. **Needle position** — lost-in-the-middle: at matched fill the **middle** degrades most; edges are near-immune. General across both providers ⇒ **R90 is a middle / worst-case measure.**
 
-![Distance success by needle position; the middle degrades most for every model at matched fill](fig2_lost_in_the_middle.png)
+![Distance success by needle position; the middle degrades most for every model at matched fill](figures/fig2_lost_in_the_middle.png)
 
 ## Honest limits (these are part of the contribution)
 
 - **The IV is confounded** — the manual grows by adding more *same-format* distractor rules, and needles are resampled per fill, so context length is entangled with **search-space size** and **target identity**. So the honest IV is **"retrieval under growing distractor-dense load,"** not context length alone. The code ships an `--padding inert` / `--fixed-needle-seed` path that isolates raw length (fixed rule pool + inert filler); running that disentangling sweep is a funded-session **TODO**, not yet done.
-- **N=4: no cross-model *predictive* law survives** — this is a descriptive coordinate system, not a predictor. The geometric "~4.1×/rung" ladder was R²=1.00 on 3 models but predicted Sonnet R90≈523k vs actual 395k (−24%); any 3 monotone points fit a line with R²≥0.75 by construction. Reproduce with `python invariant_power_sim.py`.
+- **Small N (5 rungs, only 4 fitted): no cross-model *predictive* law survives** — this is a descriptive coordinate system, not a predictor. The open-weights rung is flat (no in-window knee), so it adds a model but not a fitted point. The geometric "~4.1×/rung" ladder was R²=1.00 on 3 models but predicted Sonnet R90≈523k vs actual 395k (−24%); any 3 monotone points fit a line with R²≥0.75 by construction. Reproduce with `python invariant_power_sim.py`.
 - **`near` is at/near ceiling, not 1.00** — run-clustered minima are 0.97 (Haiku) / 0.98 (gpt-3.5); CIs are wide on the few-run Anthropic cells, and a few low-fill Haiku *distance* points have **no matched `near` cell**. The decay is still unambiguous, but "pinned at 1.00" was an overstatement. Reproduce with `python bootstrap_ci.py`.
 - **Sonnet doesn't cliff in-window** — its curve is noisy/non-monotonic (3–4 runs/cell, temperature 1.0), so R90≈395k is a noise-sensitive first crossing; only gpt-4o-mini fully crosses 0.50 in-window.
 - **Severity labels are heuristic, and the committed numbers use the *old* classifier** — historical `distance` failures are a flat `wrong` (a grab-bag). The code now splits `distractor` (real-but-wrong manual value) / `fabricated` (clean invented number) / `unclassified_wrong` via an AST scan, but that applies to **future** runs only — the modules from past runs are gone, so the severity figures here are not re-graded.
@@ -89,7 +100,7 @@ python invariant_power_sim.py   # why N=4 licenses no cross-model law (power sim
 python make_figures.py          # writes fig1 + fig2 (with Wilson error bars) from the raw JSONL
 ```
 
-All four read an explicit `canonical_manifest.txt` (not a bare glob) and skip any `provider == "mock"` record, so a stray offline/scratch run can't contaminate the real curves.
+All four read an explicit `data/canonical_manifest.txt` (not a bare glob) and skip any `provider == "mock"` record, so a stray offline/scratch run can't contaminate the real curves.
 
 Validate the harness offline (zero cost), then run a real curve:
 
@@ -105,11 +116,20 @@ python reliability_probe_distance.py --provider openai --model gpt-4o-mini \
 
 Key flags: `--provider {anthropic,openai,mock}`, `--model`, `--conditions {near,distance}`, `--fills` (context-fill targets, cap below the model window), `--runs`, `--needles`, `--depth` (needle position; 0.5 = middle = hardest), `--cache` (Anthropic prefix-cache the manual).
 
-## Open-weights rung on Colab / a GPU box
+## The open-weights rung (Qwen3.6-27B)
 
-The panel is currently 2 OpenAI + 2 Anthropic (all API). An **open-weights** rung adds (a) full reproducibility with no API key and (b) a **white-box** point where vendor-side context handling can't confound "context-fill." It serves through vLLM's OpenAI-compatible endpoint, so the existing OpenAI adapter works with just `OPENAI_BASE_URL` pointed at the local server.
+The fifth rung is an **open-weights, white-box** point. It adds (a) full reproducibility with **no API key or budget**, and (b) a control where vendor-side context handling (retrieval augmentation, attention sinks, hidden compression) can't confound a "context-fill" reading, because the serving stack is fully known. It runs **Qwen3.6-27B** in dense **BF16** on a single 80 GB A100 via **vLLM**, at the model's **native 262k window (no YaRN)**, thinking off. vLLM's OpenAI-compatible endpoint means the existing OpenAI adapter works with just `OPENAI_BASE_URL` pointed at the local server — no harness change beyond a base-URL swap.
 
-See [`notebooks/colab_open_model.ipynb`](notebooks/colab_open_model.ipynb) — it downloads a dense open model (Qwen3), serves it with the correct long-context (YaRN) and tool-call configuration, and runs a `near`-only smoke test as the go/no-go before any full sweep.
+**Result:** both `near` and `distance` stay **flat at 1.00 through ctx ~212k** — no knee in the tested window, so R90 is a **lower bound (>212k)** and the model lands in the **top** robustness band without being rankable against Sonnet. The limit is **reach, not cleanliness**: an A100's KV cache holds ~one max-length sequence, so at default concurrency the deepest fills (ctx ~253k) timed out. `near = 1.00` in BF16 confirms the serving stack (quant / RoPE / tool-parsing) didn't degrade retrieval — the `near` control guards the quantization confound. The practical consequence: **single-needle retrieval saturates for strong models** (Sonnet and Qwen3.6-27B both at ceiling), which is exactly what makes a multi-needle / multi-hop variant the highest-value next step.
+
+Reproduce on a Colab A100 with [`notebooks/colab_open_model.ipynb`](notebooks/colab_open_model.ipynb): it installs vLLM matched to the runtime CUDA, serves the model with the correct long-context + tool-call configuration, runs a `near`-only smoke test as the go/no-go, then the sweep.
+
+## Future work
+
+- **Multi-needle / multi-hop variant** — the highest-value add. Single-needle retrieval saturates at the top of the ladder (Sonnet *and* Qwen3.6-27B both at ceiling), so a harder retrieval task is the only way left to *separate* strong models; it would also move every top-band knee left.
+- **Length-disentangling sweep** (`--padding inert --fixed-needle-seed`) — isolates raw context length from distractor-count and target identity, letting the headline IV move from *"retrieval under growing distractor-dense load"* to *isolated context-length*. The code path ships; the run is pending.
+- **Push the open-weights rung past ctx 212k** — re-run the top fills at `--workers 1` (one request at a time, avoiding the KV-cache queue timeout) to turn its R90 lower bound into a located value.
+- **A second task type** beyond multiplicative-factor retrieval, to test generality.
 
 ## Repo structure
 
@@ -119,13 +139,17 @@ reliability_probe.py            # v1: native tool-calling loop (frozen baseline)
 reliability_probe_v2.py         # v2: accumulating-context harness (frozen)
 analyze_curves.py               # logistic fits + R90 contour + collapse test + near minima (stdlib)
 bootstrap_ci.py                 # run-clustered bootstrap CIs + severity breakdown (stdlib)
-invariant_power_sim.py          # N=3/N=4 power simulation for the no-cross-model-law claim (stdlib)
+invariant_power_sim.py          # power simulation for the no-cross-model-law claim (stdlib)
 make_figures.py                 # renders fig1 + fig2 (with error bars) from the raw JSONL
-canonical_manifest.txt          # explicit list of canonical run files (anti-contamination)
-dist_results_*.jsonl            # the 4-model ladder (canonical, depth=0.5); mock -> mock_results_*
-posweep_*.jsonl                 # needle-position sweeps (lost-in-the-middle)
-fig1_*.png, fig2_*.png          # the two figures
-notebooks/                      # Colab notebook for the open-weights rung
+data/
+  canonical_manifest.txt        # explicit list of canonical run files (anti-contamination)
+  dist_results_*.jsonl          # the 5-rung ladder (canonical, depth=0.5); mock -> mock_results_*
+  posweep_manifest.txt          # explicit list of the position-sweep files
+  posweep_*.jsonl               # needle-position sweeps (lost-in-the-middle)
+figures/
+  fig1_*.png, fig2_*.png        # the two figures (regenerate with: python make_figures.py)
+notebooks/
+  colab_open_model.ipynb        # Colab notebook reproducing the open-weights rung
 ```
 
 ## License

@@ -52,12 +52,14 @@ def wilson(p: float, n: int, z: float = 1.96) -> tuple[float, float]:
 def canonical_files() -> list[str]:
     """The canonical run files. Prefer an explicit manifest over a bare glob so a stray mock or
     scratch file can never be ingested into the real curves (review finding #1)."""
-    manifest = Path("canonical_manifest.txt")
+    manifest = Path("data/canonical_manifest.txt")
     if manifest.exists():
         names = [ln.strip() for ln in manifest.read_text(encoding="utf-8").splitlines()
                  if ln.strip() and not ln.strip().startswith("#")]
-        return [f for f in names if Path(f).exists()]
-    return sorted(glob.glob("dist_results_*.jsonl"))
+        # Run files live next to the manifest (data/); resolve relative to it so bare
+        # filenames in the manifest stay portable regardless of the working directory.
+        return [str(manifest.parent / n) for n in names if (manifest.parent / n).exists()]
+    return sorted(glob.glob("data/dist_results_*.jsonl"))
 
 
 def load() -> dict[str, dict[str, list[tuple[float, float, int]]]]:

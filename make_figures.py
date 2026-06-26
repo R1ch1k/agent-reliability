@@ -54,12 +54,13 @@ Cell = tuple[float, float, float, float, int, int]
 
 def posweep_files() -> list[str]:
     """Manifest-or-glob for the position-sweep files (mirrors analyze_curves.canonical_files)."""
-    manifest = Path("posweep_manifest.txt")
+    manifest = Path("data/posweep_manifest.txt")
     if manifest.exists():
         names = [ln.strip() for ln in manifest.read_text(encoding="utf-8").splitlines()
                  if ln.strip() and not ln.strip().startswith("#")]
-        return [f for f in names if Path(f).exists()]
-    return sorted(glob.glob("posweep_*.jsonl"))
+        # Resolve relative to the manifest (data/) — mirrors analyze_curves.canonical_files.
+        return [str(manifest.parent / n) for n in names if (manifest.parent / n).exists()]
+    return sorted(glob.glob("data/posweep_*.jsonl"))
 
 
 def load_distance() -> dict[str, dict[str, list[Cell]]]:
@@ -159,8 +160,9 @@ def fig_curves(data: dict[str, dict[str, list[Cell]]]) -> None:
     ax.legend(loc="lower left", fontsize=8.5, framealpha=0.92)
     ax.grid(True, which="both", ls="-", alpha=0.13)
     fig.tight_layout()
-    fig.savefig("fig1_reliability_curves.png", dpi=150)
-    print("wrote fig1_reliability_curves.png")
+    Path("figures").mkdir(exist_ok=True)
+    fig.savefig("figures/fig1_reliability_curves.png", dpi=150)
+    print("wrote figures/fig1_reliability_curves.png")
 
 
 def fig_position(pos: dict[tuple[str, int], dict[float, Cell]]) -> None:
@@ -202,8 +204,9 @@ def fig_position(pos: dict[tuple[str, int], dict[float, Cell]]) -> None:
     ax.legend(fontsize=8.5, loc="lower center", ncol=2)
     ax.grid(True, axis="y", alpha=0.15)
     fig.tight_layout()
-    fig.savefig("fig2_lost_in_the_middle.png", dpi=150)
-    print("wrote fig2_lost_in_the_middle.png")
+    Path("figures").mkdir(exist_ok=True)
+    fig.savefig("figures/fig2_lost_in_the_middle.png", dpi=150)
+    print("wrote figures/fig2_lost_in_the_middle.png")
 
 
 def main() -> None:
