@@ -22,7 +22,10 @@ from analyze_curves import canonical_files
 
 B = 5000
 SEED = 20260622
-ORDER = ["gpt-3.5-turbo", "gpt-4o-mini", "claude-haiku-4-5-20251001", "claude-sonnet-4-6"]
+# "open-model" (Qwen3.6-27B, the open-weights rung) is all-correct in every cell, so its
+# run-clustered CI is a degenerate [1.00, 1.00]; that degenerate interval is the quantitative
+# face of single-needle saturation, so it is REPORTED here (and on fig 1), not silently dropped.
+ORDER = ["gpt-3.5-turbo", "gpt-4o-mini", "claude-haiku-4-5-20251001", "claude-sonnet-4-6", "open-model"]
 # severity buckets; legacy data uses flat "wrong", post-#8 data uses fabricated/unclassified_wrong
 WRONGISH = ("wrong", "fabricated", "unclassified_wrong")
 
